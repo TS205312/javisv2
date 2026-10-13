@@ -1,0 +1,33 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Local agent workspace and legacy project snapshot
+.kilo/
+auto_agent/
+build_agent.py
+
+# Runtime data, logs, and generated test output
+logs/
+data/
+output/
+*.log
+cli_test.txt
+test_output.txt
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

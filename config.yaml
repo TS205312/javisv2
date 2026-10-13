@@ -1,0 +1,33 @@
+﻿# Jarvis configuration
+# All values can be overridden via JARVIS_* environment variables.
+# No secrets are stored here; sensitive values belong in .env and are
+# loaded by the Config class at runtime.
+
+# --- Ollama / LLM ---
+ollama_host: "http://localhost:11434"   # Ollama API endpoint
+llm_model: "qwen2.5:0.5b"               # Default chat model tag
+num_ctx: 2048                           # Context window size
+num_predict: 512                        # Max tokens to generate
+temperature: 0.3                        # Sampling temperature (lower = more deterministic)
+timeout: 90                             # HTTP timeout in seconds
+
+# --- Speech-to-text ---
+stt_sample_rate: 16000                 # Microphone sample rate (Hz)
+stt_model_path: ""                      # Vosk model path; empty = auto-detect
+
+# --- Text-to-speech ---
+tts_prefer_online: true                # Prefer online TTS voices when available
+tts_voice: "vi-VN-NamMinhNeural"       # Default Edge-TTS voice
+
+# --- RAG ---
+rag_model: "all-MiniLM-L6-v2"          # Sentence-transformers embedding model
+rag_chunk_size: 512                    # Characters per chunk
+rag_overlap: 80                       # Overlap between consecutive chunks
+rag_top_k: 4                           # Number of chunks to retrieve
+
+# --- Vision ---
+vision_model: "moondream:latest"        # Ollama vision model tag
+
+# --- Resource limits ---
+resource_max_workers: 2                # Max concurrent worker threads
+resource_max_ram_gb: 12                # Soft RAM guard in gigabytes
