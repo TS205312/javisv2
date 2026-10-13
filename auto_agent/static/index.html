@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cửa Hàng Trực Tuyến</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>Cửa Hàng Của Tôi</h1>
+        <div id="cart-container">
+            <span id="cart-count">0</span>
+            <span id="cart-total">0đ</span>
+        </div>
+    </header>
+
+    <main>
+        <section id="product-list">
+            <!-- Products will be loaded here -->
+        </section>
+
+        <aside id="cart-section">
+            <h2>Giỏ Hàng</h2>
+            <ul id="cart-items"></ul>
+            <div id="cart-summary">
+                <p>Tổng cộng: <span id="cart-summary-total">0đ</span></p>
+                <button id="checkout-btn">Thanh Toán</button>
+            </div>
+        </aside>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,192 @@
+{
+  "shell_tool": {
+    "desc": "Chạy các lệnh terminal/cmd. Hỗ trợ shell commands.",
+    "use_when": "Cần chạy python, pip, git, ls, dir, hoặc các công cụ CLI.",
+    "actions": [
+      "run"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 20,
+      "test_pass_rate": 0.2472,
+      "test_count": 81,
+      "user_rating": null
+    }
+  },
+  "file_tool": {
+    "desc": "Đọc, ghi, và tìm kiếm file trên hệ thống.",
+    "use_when": "Cần tạo file, đọc nội dung file, hoặc tìm file.",
+    "actions": [
+      "read",
+      "write",
+      "search"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 21,
+      "test_pass_rate": 0.5833,
+      "test_count": 36,
+      "user_rating": null
+    }
+  },
+  "coder_tool": {
+    "desc": "Sinh code, sửa code trực tiếp vào file.",
+    "use_when": "Cần viết script, sửa file python, tạo tool mới.",
+    "actions": [
+      "write_code",
+      "fix_code"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 16,
+      "test_pass_rate": 0.4848,
+      "test_count": 33,
+      "user_rating": null
+    }
+  },
+  "browser_tool": {
+    "desc": "Dùng Playwright để điều khiển trình duyệt, scrape web.",
+    "use_when": "Cần truy cập website, lấy dữ liệu HTML, chụp ảnh web.",
+    "actions": [
+      "goto",
+      "scrape",
+      "screenshot"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 0,
+      "test_pass_rate": 0.0,
+      "test_count": 10,
+      "user_rating": null
+    }
+  },
+  "search_tool": {
+    "desc": "Tìm kiếm thông tin trên internet qua DuckDuckGo.",
+    "use_when": "Cần lấy thông tin mới nhất từ web, tìm kiếm tin tức, tài liệu.",
+    "actions": [
+      "search"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 5,
+      "test_pass_rate": 0.1562,
+      "test_count": 32,
+      "user_rating": null
+    }
+  },
+  "blender_tool": {
+    "desc": "Chạy Blender script (headless) để render 3D.",
+    "use_when": "Cần tạo 3D, render video/image qua blender --background.",
+    "actions": [
+      "run_script"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 5,
+      "test_pass_rate": 0.3125,
+      "test_count": 16,
+      "user_rating": null
+    }
+  },
+  "media_tool": {
+    "desc": "Xử lý audio/video dùng ffmpeg.",
+    "use_when": "Cần chuyển đổi định dạng, cắt ghép video/audio.",
+    "actions": [
+      "ffmpeg_run"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 0,
+      "test_pass_rate": 0.0,
+      "test_count": 4,
+      "user_rating": null
+    }
+  },
+  "computer_tool": {
+    "desc": "Điều khiển chuột, bàn phím và chụp ảnh màn hình.",
+    "use_when": "Cần tương tác GUI, click, gõ phím, mở app desktop.",
+    "actions": [
+      "click",
+      "type",
+      "screenshot"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 0,
+      "test_pass_rate": 0.0,
+      "test_count": 0,
+      "user_rating": null
+    }
+  },
+  "vision_tool": {
+    "desc": "Phân tích hình ảnh, đọc chữ (OCR), mô tả ảnh bằng AI.",
+    "use_when": "Cần hiểu nội dung ảnh, lấy text từ ảnh chụp.",
+    "actions": [
+      "analyze",
+      "ocr"
+    ],
+    "meta": {
+      "source": "builtin",
+      "repo_url": "",
+      "stars": 0,
+      "license": "",
+      "last_updated": "",
+      "success_count": 0,
+      "test_pass_rate": 0.0,
+      "test_count": 0,
+      "user_rating": null
+    }
+  },
+  "github:fastapi/fastapi": {
+    "desc": "FastAPI framework, high performance, easy to learn, fast to code, ready for production",
+    "use_when": "Use installed Python package fastapi for: Xác định các tiêu chí so sánh rõ ràng (đơn giản, tốc độ, async, validation, documentation, mở rộng, cộng đồng)",
+    "actions": [
+      "use_as_dependency"
+    ],
+    "import_name": "fastapi",
+    "query": "\"fastapi\" language:python stars:>100",
+    "meta": {
+      "source": "github",
+      "repo_url": "https://github.com/fastapi/fastapi",
+      "stars": 103012,
+      "license": "MIT",
+      "last_updated": "2026-10-11T10:40:53+00:00",
+      "success_count": 2,
+      "test_pass_rate": 0.375,
+      "test_count": 8,
+      "user_rating": null
+    }
+  }
+}

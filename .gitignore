@@ -15,7 +15,14 @@ dist/
 
 # Local agent workspace and legacy project snapshot
 .kilo/
-auto_agent/
+auto_agent/.env*
+auto_agent/.skills/
+auto_agent/chroma_db/
+auto_agent/data/
+auto_agent/logs/
+auto_agent/output/
+auto_agent/**/__pycache__/
+auto_agent/**/*.bak_*
 build_agent.py
 
 # Runtime data, logs, and generated test output

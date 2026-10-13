@@ -1,0 +1,17 @@
+google-generativeai
+requests
+python-dotenv
+rich
+mss
+Pillow
+pyautogui
+pynput
+playwright
+chromadb
+duckduckgo-search
+pytesseract
+groq
+PyGithub
+GitPython
+PyYAML
+matplotlib
