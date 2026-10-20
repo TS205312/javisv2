@@ -3,11 +3,13 @@ Logger — ghi log JSON theo session, hỗ trợ agent_id riêng biệt cho swar
 """
 import json
 import time
-import os
 import threading
+from pathlib import Path
 from rich.console import Console
+from core.sensitive_data import redact_data, redact_text
 
 console = Console()
+_LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 
 
 class SessionLogger:
@@ -17,7 +19,7 @@ class SessionLogger:
     """
 
     def __init__(self, agent_id=None, session_id=None):
-        os.makedirs("logs", exist_ok=True)
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
         ts = session_id or int(time.time())
         if agent_id == "aggregator":
             suffix = "_aggregator"
@@ -25,7 +27,7 @@ class SessionLogger:
             suffix = f"_agent{agent_id}"
         else:
             suffix = ""
-        self.filename = f"logs/session_{ts}{suffix}.json"
+        self.filename = str(_LOG_DIR / f"session_{ts}{suffix}.json")
         self.agent_id = agent_id
         self._lock = threading.Lock()
         self.data = {
@@ -36,18 +38,23 @@ class SessionLogger:
         }
 
     def log(self, event_type, details):
+        safe_event = redact_text(str(event_type))
+        safe_details = redact_data(details)
         with self._lock:
             self.data["events"].append({
-                "type": event_type,
+                "type": safe_event,
                 "timestamp": time.time(),
-                "details": details,
+                "details": safe_details,
             })
             with open(self.filename, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def print(self, prefix, message, style=None):
         tag = f"A{self.agent_id}" if self.agent_id is not None else prefix
-        console.print(f"[{tag}] [{prefix}] {message}", style=style)
+        console.print(
+            f"[{tag}] [{prefix}] {redact_text(str(message))}",
+            style=style,
+        )
 
     def print_agent_timing(self, event, timestamp, elapsed=None):
         if self.agent_id is None:

@@ -1,15 +1,16 @@
 """LLM client with free-first Ollama, Groq, and OpenRouter providers."""
 import copy
+import hashlib
 import json
 import logging
 import re
-import subprocess
 import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
 
 import requests
+from core.sensitive_data import redact_text
 
 from core.config import (
     GEMINI_API_KEY,
@@ -22,6 +23,7 @@ from core.config import (
     OLLAMA_HOST,
     OLLAMA_NUM_PARALLEL,
     OLLAMA_MODEL,
+    OLLAMA_PREFER_LOCAL,
     OPENROUTER_API_KEY,
     OPENROUTER_FALLBACK_MODEL,
     OPENROUTER_FREE_POOL,
@@ -39,6 +41,7 @@ OPENROUTER_MODEL_FAILURE_WINDOW = 5 * 60
 OPENROUTER_MODEL_BLOCK_DURATION = 30 * 60
 _STATE_LOCK = threading.RLock()
 _OLLAMA_SEMAPHORE = threading.BoundedSemaphore(max(1, OLLAMA_NUM_PARALLEL))
+_GEMINI_SEMAPHORE = threading.BoundedSemaphore(2)
 _DEFAULT_ROUTER_STATE = {
     "last_good_tier": 1,
     "last_good_model": GROQ_MODEL,
@@ -265,8 +268,55 @@ def openrouter_model_is_available(model):
     return False, "model not present in OpenRouter catalog"
 
 
+_CACHE_LOCK = threading.RLock()
+_LLM_RESPONSE_CACHE = {}
+_CACHE_TTL_SECONDS = 180.0
+_MAX_CACHE_ENTRIES = 256
+
+
+def clear_llm_cache():
+    with _CACHE_LOCK:
+        _LLM_RESPONSE_CACHE.clear()
+
+
+def _get_cached(prompt, model, json_mode, max_output_tokens):
+    now = time.time()
+    key = (
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        str(model),
+        bool(json_mode),
+        max_output_tokens,
+    )
+    with _CACHE_LOCK:
+        if key in _LLM_RESPONSE_CACHE:
+            ts, val = _LLM_RESPONSE_CACHE[key]
+            if now - ts <= _CACHE_TTL_SECONDS:
+                return copy.deepcopy(val)
+            _LLM_RESPONSE_CACHE.pop(key, None)
+    return None
+
+
+def _set_cached(prompt, model, json_mode, max_output_tokens, val):
+    now = time.time()
+    key = (
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        str(model),
+        bool(json_mode),
+        max_output_tokens,
+    )
+    with _CACHE_LOCK:
+        if len(_LLM_RESPONSE_CACHE) >= _MAX_CACHE_ENTRIES:
+            oldest = min(
+                _LLM_RESPONSE_CACHE.keys(),
+                key=lambda k: _LLM_RESPONSE_CACHE[k][0],
+            )
+            _LLM_RESPONSE_CACHE.pop(oldest, None)
+        _LLM_RESPONSE_CACHE[key] = (now, copy.deepcopy(val))
+
+
 def reset_router_state():
     global _ROUTER_STATE
+    clear_llm_cache()
     with _STATE_LOCK:
         _ROUTER_STATE = {
             **copy.deepcopy(_DEFAULT_ROUTER_STATE),
@@ -280,39 +330,101 @@ def reset_router_state():
 
 
 def _extract_json(text):
-    """Trích xuất JSON từ text, kể cả khi bọc trong markdown fences."""
-    match = re.search(r'```(?:json)?\s*(.*?)```', text, re.DOTALL)
+    """Parse JSON returned alone, in markdown fences, or surrounded by prose."""
+    if not isinstance(text, str):
+        raise TypeError("JSON response must be text")
+
+    candidate = text.strip()
+    match = re.search(
+        r"```(?:json)?\s*(.*?)```",
+        candidate,
+        re.DOTALL | re.IGNORECASE,
+    )
     if match:
-        text = match.group(1).strip()
-    return json.loads(text)
+        candidate = match.group(1).strip()
+
+    decoder = json.JSONDecoder()
+    try:
+        return decoder.decode(candidate)
+    except json.JSONDecodeError:
+        pass
+
+    for index, character in enumerate(candidate):
+        if character not in "{[":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(candidate[index:])
+        except json.JSONDecodeError:
+            continue
+        return parsed
+    raise json.JSONDecodeError("No JSON value found in model response", candidate, 0)
 
 
 def ollama_model_is_installed(model=None, timeout=10):
-    """Check the configured Ollama model using the local `ollama list` command."""
+    """Check whether the local Ollama API has the requested model installed."""
     model = model or OLLAMA_MODEL
     try:
-        result = subprocess.run(
-            ["ollama", "list"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+        response = requests.get(
+            f"{OLLAMA_HOST.rstrip('/')}/api/tags",
             timeout=timeout,
-            check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"ollama list failed: {type(exc).__name__}"
-    if result.returncode != 0:
-        return False, f"ollama list exited with code {result.returncode}"
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        return False, f"Ollama API unavailable ({type(exc).__name__})"
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        return False, f"Invalid Ollama /api/tags response ({type(exc).__name__})"
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        return False, "Invalid Ollama /api/tags response (missing models list)"
 
     installed = {
-        line.split()[0]
-        for line in result.stdout.splitlines()[1:]
-        if line.split()
+        model_name
+        for item in payload["models"]
+        if isinstance(item, dict)
+        for model_name in (item.get("name"), item.get("model"))
+        if isinstance(model_name, str)
     }
     if model in installed:
         return True, ""
     return False, f"Ollama thiếu model {model}, skip"
+
+
+def ollama_installed_models(timeout=3):
+    """Return installed Ollama model names, collapsing aliases with the same digest."""
+    try:
+        response = requests.get(
+            f"{OLLAMA_HOST.rstrip('/')}/api/tags",
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return []
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        return []
+
+    entries = [item for item in payload["models"] if isinstance(item, dict)]
+    entries.sort(
+        key=lambda item: (item.get("name") or item.get("model")) != OLLAMA_MODEL
+    )
+    models = []
+    seen_digests = set()
+    seen_names = set()
+    for item in entries:
+        name = item.get("name") or item.get("model")
+        if not isinstance(name, str) or not name:
+            continue
+        digest = item.get("digest")
+        identity = digest if isinstance(digest, str) and digest else name
+        if identity in seen_digests or name in seen_names:
+            continue
+        models.append(name)
+        seen_digests.add(identity)
+        seen_names.add(name)
+    return models
 
 
 def _record_provider_event(event_type, details):
@@ -331,10 +443,12 @@ def ollama_is_available(timeout=3):
         return False
 
 
-def _call_ollama(prompt, model, json_mode):
+def _call_ollama(prompt, model, json_mode, max_output_tokens=None):
     payload = {"model": model, "prompt": prompt, "stream": False}
     if json_mode:
         payload["format"] = "json"
+    if max_output_tokens is not None:
+        payload["options"] = {"num_predict": max_output_tokens}
     with _OLLAMA_SEMAPHORE:
         response = requests.post(
             f"{OLLAMA_HOST.rstrip('/')}/api/generate",
@@ -345,28 +459,38 @@ def _call_ollama(prompt, model, json_mode):
     return response.json().get("response", "")
 
 
-def _call_groq(prompt, model, json_mode):
+def _call_groq(prompt, model, json_mode, max_output_tokens=None):
     from groq import Groq
 
     client = Groq(api_key=GROQ_API_KEY, timeout=REQUEST_TIMEOUT)
     request = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 512,
+        "max_tokens": _max_output_tokens(json_mode, max_output_tokens),
     }
     if json_mode:
         request["response_format"] = {"type": "json_object"}
-    response = client.chat.completions.create(**request)
+    try:
+        response = client.chat.completions.create(**request)
+    except Exception as exc:
+        if not json_mode or not _is_response_format_rejection(exc):
+            raise
+        request.pop("response_format")
+        logger.warning(
+            "Groq rejected JSON response_format for model %s; retrying without it.",
+            model,
+        )
+        response = client.chat.completions.create(**request)
     if not response.choices:
         return ""
     return response.choices[0].message.content or ""
 
 
-def _call_openrouter(prompt, model, json_mode):
+def _call_openrouter(prompt, model, json_mode, max_output_tokens=None):
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 512,
+        "max_tokens": _max_output_tokens(json_mode, max_output_tokens),
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
@@ -386,23 +510,32 @@ def _call_openrouter(prompt, model, json_mode):
     return choices[0].get("message", {}).get("content") or ""
 
 
-def _call_gemini(prompt, model, json_mode):
-    import google.generativeai as genai
+def _call_gemini(prompt, model, json_mode, max_output_tokens=None):
+    from google import genai
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    client = genai.GenerativeModel(model)
-    options = {"timeout": REQUEST_TIMEOUT}
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options={"timeout": REQUEST_TIMEOUT * 1000},
+    )
+    generation_config = {
+        "max_output_tokens": _max_output_tokens(json_mode, max_output_tokens)
+    }
     if json_mode:
-        options["generation_config"] = {"response_mime_type": "application/json"}
-    response = client.generate_content(prompt, request_options=options)
+        generation_config["response_mime_type"] = "application/json"
+    with _GEMINI_SEMAPHORE:
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=generation_config,
+        )
     return getattr(response, "text", "") or ""
 
 
-def _call_kilo(prompt, model, json_mode):
+def _call_kilo(prompt, model, json_mode, max_output_tokens=None):
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 512,
+        "max_tokens": _max_output_tokens(json_mode, max_output_tokens),
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
@@ -455,6 +588,12 @@ def _exception_status(exc):
     return status or getattr(exc, "status_code", None) or getattr(exc, "code", None)
 
 
+def _max_output_tokens(json_mode, requested=None):
+    if requested is None:
+        return 2048 if json_mode else 1024
+    return min(8192, max(1, int(requested)))
+
+
 def _exception_reason(exc):
     status = _exception_status(exc)
     if status == 429 or str(status) == "429":
@@ -467,9 +606,27 @@ def _exception_reason(exc):
         return "timeout"
     if isinstance(exc, requests.ConnectionError):
         return "connection error"
+    if isinstance(exc, json.JSONDecodeError):
+        return "invalid JSON response"
     if status:
-        return f"HTTP {status}"
-    return type(exc).__name__
+        detail = str(exc).replace("\n", " ").strip()
+        return f"HTTP {status}" + (f": {detail[:160]}" if detail else "")
+    detail = str(exc).replace("\n", " ").strip()
+    return type(exc).__name__ + (f": {detail[:160]}" if detail else "")
+
+
+def _is_bad_request(exc):
+    return str(_exception_status(exc)) == "400"
+
+
+def _is_response_format_rejection(exc):
+    if not _is_bad_request(exc):
+        return False
+    detail = str(exc).casefold()
+    return any(
+        marker in detail
+        for marker in ("response_format", "json_object", "json mode", "json-mode")
+    )
 
 
 def _tier_models(name, configured_model, fallback_model, requested_model):
@@ -509,10 +666,16 @@ def _requested_route(requested_model):
     return None, ""
 
 
-def call_llm(prompt, model="auto", json_mode=False):
+def call_llm(
+    prompt, model="auto", json_mode=False, max_output_tokens=None,
+    allow_fallback=True,
+):
     """Try provider tiers in fixed order, with optional persisted router state."""
+    prompt = redact_text(str(prompt))
     requested_model = (model or "auto").strip()
     requested_provider, requested_route_model = _requested_route(requested_model)
+    if not allow_fallback and not requested_provider:
+        raise ValueError("Strict model checks require a provider:model route")
     tried = []
     providers = (
         (1, "Groq", GROQ_API_KEY, GROQ_MODEL, None, _call_groq),
@@ -525,26 +688,39 @@ def call_llm(prompt, model="auto", json_mode=False):
     )
 
     by_tier = {provider[0]: provider for provider in providers}
-    tier_order = list(range(1, 8))
-    if requested_provider:
-        matching_tiers = [
+    cloud_tiers = list(range(1, 7))
+    default_cloud_order = [6, 1, 2, 3, 4, 5]
+    requested_tier = None
+    if requested_provider == "ollama":
+        requested_tier = 7
+        cloud_order = cloud_tiers
+    elif requested_provider:
+        provider_tiers = [
             entry[0]
             for entry in providers
             if _canonical_provider(entry[1]) == requested_provider
-            and (
-                not requested_route_model
-                or entry[3] == requested_route_model
-            )
         ]
+        matching_tiers = [
+            tier
+            for tier in provider_tiers
+            if not requested_route_model
+            or by_tier[tier][3] == requested_route_model
+        ]
+        if not matching_tiers:
+            matching_tiers = provider_tiers[:1]
         if matching_tiers:
-            preferred_tier = matching_tiers[0]
-            cloud_tiers = list(range(1, 7))
-            cloud_order = (
-                cloud_tiers[preferred_tier - 1:]
-                + cloud_tiers[:preferred_tier - 1]
-            )
+            requested_tier = matching_tiers[0]
+            preferred_index = cloud_tiers.index(requested_tier)
+            cloud_order = cloud_tiers[preferred_index:] + cloud_tiers[:preferred_index]
         else:
-            cloud_order = list(range(1, 7))
+            cloud_order = cloud_tiers
+    else:
+        cloud_order = default_cloud_order
+
+    if not allow_fallback and requested_tier is None:
+        raise ValueError(f"No provider route found for {requested_model}")
+
+    if requested_provider:
         unique_order = []
         used_providers = set()
         for tier in cloud_order:
@@ -552,12 +728,25 @@ def call_llm(prompt, model="auto", json_mode=False):
             if provider_name not in used_providers:
                 unique_order.append(tier)
                 used_providers.add(provider_name)
-        tier_order = unique_order + [7]
+    else:
+        unique_order = cloud_order
+    local_first = OLLAMA_PREFER_LOCAL and not requested_provider
+    if requested_provider == "ollama":
+        local_first = False
+    tier_order = (
+        [requested_tier]
+        if not allow_fallback
+        else (
+            ([7] if local_first or requested_provider == "ollama" else [])
+            + unique_order
+            + ([] if local_first or requested_provider == "ollama" else [7])
+        )
+    )
 
     for tier in tier_order:
         _, name, key, configured_model, fallback_model, request = by_tier[tier]
         is_openrouter = name.startswith("OpenRouter")
-        if requested_provider and tier == tier_order[0] and requested_route_model:
+        if requested_tier == tier and requested_route_model:
             models = (requested_route_model,)
         elif is_openrouter:
             if tier == 3 and OPENROUTER_FREE_POOL:
@@ -649,7 +838,15 @@ def call_llm(prompt, model="auto", json_mode=False):
             _increment_daily_count(tier)
             request_started = time.perf_counter()
             try:
-                text = request(prompt, selected_model, json_mode)
+                if max_output_tokens is None:
+                    text = request(prompt, selected_model, json_mode)
+                else:
+                    text = request(
+                        prompt,
+                        selected_model,
+                        json_mode,
+                        _max_output_tokens(json_mode, max_output_tokens),
+                    )
                 request_elapsed = time.perf_counter() - request_started
                 if name == "Ollama" and request_elapsed > 30:
                     logger.warning(
@@ -729,21 +926,46 @@ class LLMClient:
     def __init__(self, model_name="auto"):
         self.model_name = model_name or "auto"
 
-    def ask(self, prompt, json_mode=False):
+    def ask(self, prompt, json_mode=False, max_output_tokens=None, use_cache=True):
         try:
-            text = call_llm(prompt, model=self.model_name, json_mode=json_mode)
-            if json_mode:
-                return _extract_json(text)
-            return text
+            prompt = redact_text(str(prompt))
+            if use_cache:
+                cached = _get_cached(
+                    prompt, self.model_name, json_mode, max_output_tokens
+                )
+                if cached is not None:
+                    return cached
+            if max_output_tokens is None:
+                text = call_llm(
+                    prompt, model=self.model_name, json_mode=json_mode
+                )
+            else:
+                text = call_llm(
+                    prompt,
+                    model=self.model_name,
+                    json_mode=json_mode,
+                    max_output_tokens=max_output_tokens,
+                )
+            text = redact_text(str(text))
+            res = _extract_json(text) if json_mode else text
+            if use_cache and res and not (isinstance(res, dict) and "error" in res):
+                _set_cached(
+                    prompt, self.model_name, json_mode, max_output_tokens, res
+                )
+            return res
         except Exception as e:
             if json_mode:
-                return {"error": str(e)}
-            return f"Error: {str(e)}"
+                return {"error": redact_text(str(e))}
+            return f"Error: {redact_text(str(e))}"
 
 
 _default_client = LLMClient("auto")
 
 
-def ask_llm(prompt, json_mode=False):
+def ask_llm(prompt, json_mode=False, max_output_tokens=None):
     """Backward-compatible helper used by the single-agent pipeline."""
-    return _default_client.ask(prompt, json_mode=json_mode)
+    return _default_client.ask(
+        prompt,
+        json_mode=json_mode,
+        max_output_tokens=max_output_tokens,
+    )

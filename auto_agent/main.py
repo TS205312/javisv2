@@ -20,11 +20,11 @@ def main():
     parser = argparse.ArgumentParser(description="Autonomous Agent CLI")
     parser.add_argument("--goal", type=str, required=True)
     parser.add_argument("--max-steps", type=int, default=50)
-    parser.add_argument("--agents", type=int, default=1)
+    parser.add_argument("--agents", type=int, default=4)
     parser.add_argument(
         "--strategy",
-        default="ensemble",
-        choices=["ensemble", "debate", "vote"],
+        default="debate",
+        choices=["debate"],
     )
     parser.add_argument("--models", type=str, default=None)
     parser.add_argument("--yolo", action="store_true")
@@ -33,9 +33,10 @@ def main():
 
     console.print(Panel(f"🎯 {args.goal}", title="Agent"))
     if args.agents <= 1:
-        run_single_agent(args.goal, args.max_steps, args.yolo, args.cwd)
+        result = run_single_agent(args.goal, args.max_steps, args.yolo, args.cwd)
+        return 1 if result is False else 0
     else:
-        run_swarm_mode(
+        succeeded = run_swarm_mode(
             args.goal,
             args.agents,
             args.strategy,
@@ -44,7 +45,8 @@ def main():
             args.yolo,
             args.cwd,
         )
+        return 0 if succeeded else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

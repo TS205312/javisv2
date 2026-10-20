@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+import types
 from unittest import mock
 
 import requests
@@ -15,11 +16,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 from core import llm_helper
+from core import router
 
 
-def _http_error(status):
+def _http_error(status, message=""):
     response = mock.Mock(status_code=status)
-    return requests.HTTPError(response=response)
+    return requests.HTTPError(message, response=response)
 
 
 class RouterFallbackTests(unittest.TestCase):
@@ -38,6 +40,7 @@ class RouterFallbackTests(unittest.TestCase):
         self.catalog_path_patch.start()
         llm_helper.reset_router_state()
         self.key_patches = [
+            mock.patch.object(llm_helper, "OLLAMA_PREFER_LOCAL", False),
             mock.patch.object(llm_helper, "KILO_API_KEY", "kilo-test"),
             mock.patch.object(llm_helper, "OPENROUTER_API_KEY", "openrouter-test"),
             mock.patch.object(
@@ -70,6 +73,32 @@ class RouterFallbackTests(unittest.TestCase):
         self.state_path_patch.stop()
         self.temp_dir.cleanup()
 
+    def test_swarm_router_prompt_disallows_physical_desktop(self):
+        client = mock.Mock()
+        client.ask.return_value = {"tool": "browser_tool", "action": "open"}
+        with (
+            mock.patch.object(
+                router.SkillResolver,
+                "resolve",
+                return_value={"skill": "browser_tool"},
+            ),
+            mock.patch.object(
+                router,
+                "get_all_skills",
+                return_value={"browser_tool": {"description": "browser"}},
+            ),
+        ):
+            router.route_task(
+                {"desc": "open a web page"}, "", llm_client=client,
+                swarm_agent_id="agent-1",
+            )
+
+        prompt = client.ask.call_args.args[0]
+        self.assertIn("Không dùng computer_tool", prompt)
+        self.assertIn("đang bị vô hiệu hóa cho agent", prompt)
+        self.assertNotIn("computer_tool.perform", prompt)
+        self.assertNotIn("coder_tool", prompt)
+
     def test_tier1_fail_tier2_ok(self):
         with (
             mock.patch.object(
@@ -81,6 +110,238 @@ class RouterFallbackTests(unittest.TestCase):
 
         self.assertEqual(result, "hello from Kilo")
         self.assertEqual(llm_helper._ROUTER_STATE["last_good_tier"], 2)
+
+    def test_strict_model_api_check_does_not_hide_failure_with_fallback(self):
+        with (
+            mock.patch.object(
+                llm_helper, "_call_kilo", side_effect=_http_error(429)
+            ) as kilo,
+            mock.patch.object(
+                llm_helper, "_call_openrouter", side_effect=AssertionError
+            ) as openrouter,
+            mock.patch.object(
+                llm_helper, "_call_groq", side_effect=AssertionError
+            ) as groq,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "All LLM tiers failed"):
+                llm_helper.call_llm(
+                    "Reply OK", model="kilo:kilo-auto/free",
+                    max_output_tokens=8, allow_fallback=False,
+                )
+
+        kilo.assert_called_once()
+        openrouter.assert_not_called()
+        groq.assert_not_called()
+
+    def test_extract_json_from_surrounding_prose_and_markdown(self):
+        parsed = llm_helper._extract_json(
+            'Here is the plan:\n```JSON\n{"tasks": []}\n```\nDone.'
+        )
+
+        self.assertEqual(parsed, {"tasks": []})
+
+    def test_groq_retries_json_request_without_response_format_on_400(self):
+        response = mock.Mock()
+        response.choices = [
+            mock.Mock(message=mock.Mock(content='{"tasks": []}'))
+        ]
+        client = mock.Mock()
+        client.chat.completions.create.side_effect = [
+            _http_error(400, "response_format is not supported"),
+            response,
+        ]
+        fake_groq = types.SimpleNamespace(
+            Groq=mock.Mock(return_value=client)
+        )
+        with mock.patch.dict(sys.modules, {"groq": fake_groq}):
+            result = llm_helper._call_groq("make a plan", "test-model", True)
+
+        self.assertEqual(result, '{"tasks": []}')
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        first_request = client.chat.completions.create.call_args_list[0].kwargs
+        retry_request = client.chat.completions.create.call_args_list[1].kwargs
+        self.assertIn("response_format", first_request)
+        self.assertNotIn("response_format", retry_request)
+
+    def test_groq_does_not_retry_unrelated_bad_request(self):
+        client = mock.Mock()
+        client.chat.completions.create.side_effect = _http_error(
+            400, "model is not available"
+        )
+        fake_groq = types.SimpleNamespace(
+            Groq=mock.Mock(return_value=client)
+        )
+        with mock.patch.dict(sys.modules, {"groq": fake_groq}):
+            with self.assertRaises(requests.HTTPError):
+                llm_helper._call_groq("make a plan", "test-model", True)
+
+        client.chat.completions.create.assert_called_once()
+
+    def test_gemini_passes_generation_config_to_supported_parameter(self):
+        response = mock.Mock(text='{"tasks": []}')
+        client = mock.Mock()
+        client.models.generate_content.return_value = response
+        fake_genai = types.SimpleNamespace(
+            Client=mock.Mock(return_value=client),
+        )
+        fake_google = types.ModuleType("google")
+        fake_google.genai = fake_genai
+        with mock.patch.dict(
+            sys.modules,
+            {"google": fake_google, "google.genai": fake_genai},
+        ):
+            result = llm_helper._call_gemini("make a plan", "test-model", True)
+
+        self.assertEqual(result, '{"tasks": []}')
+        fake_genai.Client.assert_called_once_with(
+            api_key=llm_helper.GEMINI_API_KEY,
+            http_options={"timeout": llm_helper.REQUEST_TIMEOUT * 1000},
+        )
+        client.models.generate_content.assert_called_once_with(
+            model="test-model",
+            contents="make a plan",
+            config={
+                "max_output_tokens": llm_helper._max_output_tokens(True),
+                "response_mime_type": "application/json",
+            },
+        )
+
+    def test_gemini_accepts_a_larger_output_budget_for_slide_drafts(self):
+        response = mock.Mock(text="draft")
+        client = mock.Mock()
+        client.models.generate_content.return_value = response
+        fake_genai = types.SimpleNamespace(Client=mock.Mock(return_value=client))
+        fake_google = types.ModuleType("google")
+        fake_google.genai = fake_genai
+        with mock.patch.dict(
+            sys.modules,
+            {"google": fake_google, "google.genai": fake_genai},
+        ):
+            result = llm_helper._call_gemini(
+                "slide prompt", "test-model", False, max_output_tokens=3072
+            )
+
+        self.assertEqual(result, "draft")
+        self.assertEqual(
+            client.models.generate_content.call_args.kwargs["config"],
+            {"max_output_tokens": 3072},
+        )
+
+    def test_call_llm_passes_explicit_output_budget_to_preferred_free_provider(self):
+        with (
+            mock.patch.object(llm_helper, "GEMINI_API_KEY", "test-key"),
+            mock.patch.object(llm_helper, "OLLAMA_PREFER_LOCAL", False),
+            mock.patch.object(
+                llm_helper, "_call_gemini", return_value="complete draft"
+            ) as gemini,
+            mock.patch.object(llm_helper, "_call_groq", side_effect=AssertionError),
+            mock.patch.object(llm_helper, "_call_kilo", side_effect=AssertionError),
+            mock.patch.object(llm_helper, "_call_openrouter", side_effect=AssertionError),
+            mock.patch.object(llm_helper, "_call_ollama", side_effect=AssertionError),
+        ):
+            result = llm_helper.call_llm(
+                "slide prompt", max_output_tokens=3072
+            )
+
+        self.assertEqual(result, "complete draft")
+        gemini.assert_called_once_with(
+            "slide prompt", llm_helper.GEMINI_MODEL, False, 3072
+        )
+
+    def test_auto_route_prefers_free_long_context_gemini(self):
+        with (
+            mock.patch.object(llm_helper, "OLLAMA_PREFER_LOCAL", False),
+            mock.patch.object(llm_helper, "_call_gemini", return_value="gemini result") as gemini,
+            mock.patch.object(llm_helper, "_call_groq", side_effect=AssertionError),
+            mock.patch.object(llm_helper, "_call_kilo", side_effect=AssertionError),
+            mock.patch.object(llm_helper, "_call_openrouter", side_effect=AssertionError),
+            mock.patch.object(llm_helper, "_call_ollama", side_effect=AssertionError),
+        ):
+            result = llm_helper.call_llm("hello")
+
+        self.assertEqual(result, "gemini result")
+        gemini.assert_called_once_with(
+            "hello", llm_helper.GEMINI_MODEL, False
+        )
+
+    def test_ollama_model_probe_uses_local_tags_api(self):
+        response = mock.Mock()
+        response.json.return_value = {
+            "models": [{"name": "qwen2.5-coder:1.5b"}]
+        }
+        with mock.patch.object(
+            llm_helper.requests, "get", return_value=response
+        ) as get:
+            installed, reason = llm_helper.ollama_model_is_installed(
+                "qwen2.5-coder:1.5b"
+            )
+
+        self.assertTrue(installed)
+        self.assertEqual(reason, "")
+        get.assert_called_once_with(
+            f"{llm_helper.OLLAMA_HOST.rstrip('/')}/api/tags",
+            timeout=10,
+        )
+
+    def test_ollama_model_discovery_collapses_aliases_and_prefers_configured_model(self):
+        response = mock.Mock()
+        response.json.return_value = {
+            "models": [
+                {"name": "qwen2.5-coder:1.5b.bak", "digest": "same"},
+                {"name": "qwen2.5:3b", "digest": "three-b"},
+                {"name": "qwen2.5-coder:1.5b", "digest": "same"},
+                {"name": "qwen2.5:7b", "digest": "seven-b"},
+            ]
+        }
+        with (
+            mock.patch.object(llm_helper, "OLLAMA_MODEL", "qwen2.5-coder:1.5b"),
+            mock.patch.object(llm_helper.requests, "get", return_value=response),
+        ):
+            models = llm_helper.ollama_installed_models()
+
+        self.assertEqual(
+            models,
+            ["qwen2.5-coder:1.5b", "qwen2.5:3b", "qwen2.5:7b"],
+        )
+
+    def test_local_first_uses_ollama_when_model_is_available(self):
+        with (
+            mock.patch.object(llm_helper, "OLLAMA_PREFER_LOCAL", True),
+            mock.patch.object(
+                llm_helper, "ollama_model_is_installed", return_value=(True, "")
+            ),
+            mock.patch.object(
+                llm_helper, "_call_ollama", return_value="local response"
+            ) as ollama,
+            mock.patch.object(
+                llm_helper, "_call_groq", side_effect=AssertionError("cloud called")
+            ),
+        ):
+            result = llm_helper.call_llm("hello")
+
+        self.assertEqual(result, "local response")
+        ollama.assert_called_once_with(
+            "hello", llm_helper.OLLAMA_MODEL, False
+        )
+
+    def test_local_first_falls_back_to_cloud_when_ollama_unavailable(self):
+        with (
+            mock.patch.object(llm_helper, "OLLAMA_PREFER_LOCAL", True),
+            mock.patch.object(
+                llm_helper,
+                "ollama_model_is_installed",
+                return_value=(False, "Ollama API unavailable (ConnectionError)"),
+            ),
+            mock.patch.object(
+                llm_helper, "_call_groq", return_value="cloud fallback"
+            ) as groq,
+        ):
+            result = llm_helper.call_llm("hello")
+
+        self.assertEqual(result, "cloud fallback")
+        groq.assert_called_once_with(
+            "hello", llm_helper.GROQ_MODEL, False
+        )
 
     def test_router_kilo_empty_response(self):
         with (
@@ -361,6 +622,26 @@ class RouterFallbackTests(unittest.TestCase):
         self.assertIn("Tier 7 (Ollama)", output.getvalue())
         self.assertEqual(llm_helper._ROUTER_STATE["last_good_tier"], 7)
 
+    def test_explicit_ollama_model_does_not_index_cloud_tiers(self):
+        with (
+            mock.patch.object(llm_helper, "GROQ_API_KEY", ""),
+            mock.patch.object(llm_helper, "KILO_API_KEY", ""),
+            mock.patch.object(llm_helper, "OPENROUTER_API_KEY", ""),
+            mock.patch.object(llm_helper, "GEMINI_API_KEY", ""),
+            mock.patch.object(
+                llm_helper, "ollama_model_is_installed", return_value=(True, "")
+            ),
+            mock.patch.object(
+                llm_helper, "_call_ollama", return_value="local plan"
+            ) as ollama,
+        ):
+            result = llm_helper.call_llm(
+                "plan prompt", model="ollama:qwen2.5:3b", json_mode=False,
+            )
+
+        self.assertEqual(result, "local plan")
+        ollama.assert_called_once_with("plan prompt", "qwen2.5:3b", False)
+
     def test_call_ollama_endpoint_and_timeout(self):
         response = mock.Mock()
         response.json.return_value = {"response": "hello"}
@@ -405,7 +686,7 @@ class RouterFallbackTests(unittest.TestCase):
             self.assertEqual(llm_helper.call_llm("hello"), "hello")
             self.assertEqual(llm_helper.call_llm("hello"), "hello")
 
-        self.assertEqual(order, [1, 2, 1, 2])
+        self.assertEqual(order, [6, 1, 2, 6, 1, 2])
         state = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["last_good_tier"], 2)
         self.assertEqual(state["daily_count"]["1"], 2)
@@ -421,7 +702,7 @@ class RouterFallbackTests(unittest.TestCase):
                 (3, "OpenRouter", "nvidia/nemotron-3-ultra-550b-a55b:free"),
                 (4, "Groq", "openai/gpt-oss-20b"),
                 (5, "OpenRouter fallback", "nvidia/nemotron-3.5-lightning:free"),
-                (6, "Gemini", "gemini-3.8-flash"),
+                (6, "Gemini", "gemini-3.5-flash-lite"),
                 (7, "Ollama", "qwen2.5-coder:1.5b"),
             ),
         )

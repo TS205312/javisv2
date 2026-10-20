@@ -6,16 +6,23 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from dotenv import load_dotenv
-from github import Github, GithubException
+try:
+    from github import Github, GithubException
+except ImportError:
+    Github = None
+
+    class GithubException(Exception):
+        pass
 
 from core.memory import memory as default_memory
 from core.llm_helper import ask_llm, call_llm
+from core.sensitive_data import contains_sensitive_data, redact_text
 from tools.write_safety import backup_existing_file, prepare_write_path
 from registry import (
     get_all_skills,
@@ -24,9 +31,6 @@ from registry import (
     update_skill_meta,
 )
 
-load_dotenv()
-
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 ALLOWED_LICENSES = {
     "MIT",
     "Apache-2.0",
@@ -43,6 +47,15 @@ STOP_WORDS = {
     "làm", "một", "the", "tạo", "to", "và", "viết", "xây",
 }
 logger = logging.getLogger(__name__)
+_DISCOVERY_CACHE = {}
+_DISCOVERY_CACHE_LOCK = threading.RLock()
+_DISCOVERY_CACHE_TTL = 6 * 60 * 60
+_DISCOVERY_CACHE_LIMIT = 256
+_DISCOVERY_STOP_WORDS = STOP_WORDS | {
+    "about", "after", "agent", "app", "build", "create", "find", "for", "from",
+    "make", "need", "task", "the", "this", "use", "with", "work", "you",
+    "giup", "hay", "lam", "nhiem", "vu", "toi", "can", "de", "mot",
+}
 
 
 def _log(message, *args):
@@ -60,6 +73,9 @@ def _tokens(text):
 
 
 def _extract_keywords(goal):
+    if contains_sensitive_data(str(goal or "")):
+        _log("Keyword extraction skipped because task text contains credential-like data.")
+        return []
     prompt = (
         "Trích xuất tối đa 5 từ khóa ngắn bằng tiếng Anh để tìm Python skill/repository "
         "phù hợp nhất với mục tiêu. Với 'code web' hoặc tạo website/API, ưu tiên "
@@ -84,6 +100,23 @@ def _extract_keywords(goal):
     deduplicated = list(dict.fromkeys(keywords))[:8]
     _log("Goal keywords: %s", ", ".join(deduplicated) or "(none)")
     return deduplicated
+
+
+def _safe_discovery_keywords(task):
+    raw = str(task or "")
+    if contains_sensitive_data(raw):
+        return []
+    words = re.findall(r"[\w.+#-]{3,}", redact_text(raw).casefold(), flags=re.UNICODE)
+    keywords = []
+    seen = set()
+    for word in words:
+        if word in _DISCOVERY_STOP_WORDS or word.isdigit() or word in seen:
+            continue
+        seen.add(word)
+        keywords.append(word)
+        if len(keywords) == 5:
+            break
+    return keywords
 
 
 def _updated_within(last_updated, days):
@@ -227,7 +260,10 @@ class SkillResolver:
         )
         query = f'"{search_term}" language:python stars:>100'
         _log("GitHub query (sort=stars, order=desc): %s", query)
-        github = Github(GITHUB_TOKEN or None, timeout=20)
+        if Github is None:
+            logger.warning("GitHub discovery unavailable; PyGithub is not installed.")
+            return query, []
+        github = Github(timeout=20)
         try:
             results = github.search_repositories(
                 query=query,
@@ -530,22 +566,89 @@ class SkillResolver:
             )
             return None
 
-    def resolve(self, goal):
-        """Use an adequate local skill, otherwise hunt and finally fall back locally."""
+    def discover_best(self, task):
+        """Recommend the strongest relevant repo without cloning, installing, or importing it."""
+        keywords = _safe_discovery_keywords(task)
+        if not keywords:
+            status = "skipped_sensitive" if contains_sensitive_data(str(task or "")) else "no_keywords"
+            return {
+                "status": status,
+                "reason": "GitHub search skipped because safe task keywords were unavailable.",
+            }
+
+        cache_key = tuple(keywords)
+        now = time.monotonic()
+        with _DISCOVERY_CACHE_LOCK:
+            cached = _DISCOVERY_CACHE.get(cache_key)
+            if cached and now - cached[0] < _DISCOVERY_CACHE_TTL:
+                return dict(cached[1])
+            try:
+                query, candidates = self._github_candidates(keywords)
+                relevant = self._evaluate_candidates(
+                    " ".join(keywords),
+                    keywords,
+                    candidates,
+                ) if candidates else []
+                if relevant:
+                    best = max(
+                        relevant,
+                        key=lambda item: (item["stars"], item["last_updated"]),
+                    )
+                    recommendation = {
+                        "status": "recommended_not_installed",
+                        "skill": f"github:{best['full_name']}",
+                        "repo_url": best["url"],
+                        "stars": best["stars"],
+                        "license": best["license"],
+                        "last_updated": best["last_updated"],
+                        "description": best["description"][:500],
+                        "query": query,
+                        "reason": "Highest-star relevant repository among the filtered candidates.",
+                    }
+                    _log(
+                        "Recommended GitHub skill %s (%d stars); code was not installed or executed.",
+                        best["full_name"],
+                        best["stars"],
+                    )
+                else:
+                    recommendation = {
+                        "status": "no_candidate",
+                        "query": query,
+                        "reason": "No repository passed relevance, license, freshness, and fork filters.",
+                    }
+            except Exception as exc:
+                recommendation = {
+                    "status": "unavailable",
+                    "reason": f"GitHub discovery failed ({type(exc).__name__}).",
+                }
+                logger.warning("GitHub task discovery failed (%s).", type(exc).__name__)
+
+            _DISCOVERY_CACHE[cache_key] = (now, recommendation)
+            while len(_DISCOVERY_CACHE) > _DISCOVERY_CACHE_LIMIT:
+                _DISCOVERY_CACHE.pop(next(iter(_DISCOVERY_CACHE)))
+            return dict(recommendation)
+
+    def resolve(self, goal, allow_github=False):
+        """Use local skills first, optionally discovering a GitHub skill."""
         local = self.find_local_skills(goal)
         for skill in local:
             if self.is_skill_good_enough(skill, goal):
                 _log("Decision: use local skill %s", skill["skill"])
                 return skill
 
-        discovered = self.hunt_best(goal)
-        if discovered:
-            _log("Decision: use discovered skill %s", discovered["skill"])
-            return discovered
+        if allow_github:
+            discovered = self.hunt_best(goal)
+            if discovered:
+                _log("Decision: use discovered skill %s", discovered["skill"])
+                return discovered
 
         fallback = local[0] if local else None
         if fallback:
-            _log("Decision: hunt failed; fallback to local skill %s", fallback["skill"])
+            _log(
+                "Decision: use local fallback %s%s",
+                fallback["skill"],
+                " (GitHub discovery disabled)" if not allow_github else " (hunt failed)",
+            )
         return fallback
 
     @staticmethod
@@ -582,6 +685,8 @@ class SkillResolver:
                 f"skill_{memory_id}_{time.time_ns()}",
                 f"Skill {name} task outcome",
                 f"{outcome}; test_pass_rate={new_rate:.2f}",
+                success=passed,
+                tool=name,
             )
             if logger:
                 logger.log("skill_outcome", {

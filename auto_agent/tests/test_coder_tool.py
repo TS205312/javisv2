@@ -13,7 +13,8 @@ from tools import coder_tool
 
 class CoderToolRuntimeTests(unittest.TestCase):
     def test_repairs_runtime_error_and_only_passes_after_success(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
+        workspace_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=workspace_root) as temp_dir:
             script = Path(temp_dir) / "factorial.py"
             failed = SimpleNamespace(
                 returncode=1, stdout="", stderr="NameError: name 'factorial' is not defined"
@@ -37,7 +38,8 @@ class CoderToolRuntimeTests(unittest.TestCase):
             ask.assert_called_once()
 
     def test_returns_stderr_after_three_failed_runs(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
+        workspace_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=workspace_root) as temp_dir:
             script = Path(temp_dir) / "broken.py"
             failure = SimpleNamespace(returncode=1, stdout="", stderr="SyntaxError")
             with (
@@ -58,7 +60,8 @@ class CoderToolRuntimeTests(unittest.TestCase):
             self.assertEqual(run_mock.call_count, 3)
 
     def test_accepts_filepath_alias(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
+        workspace_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(dir=workspace_root) as temp_dir:
             script = Path(temp_dir) / "plot.py"
             with mock.patch.object(coder_tool.subprocess, "run") as run_mock:
                 run_mock.return_value = SimpleNamespace(

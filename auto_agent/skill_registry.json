@@ -11,9 +11,9 @@
       "stars": 0,
       "license": "",
       "last_updated": "",
-      "success_count": 20,
-      "test_pass_rate": 0.2472,
-      "test_count": 81,
+      "success_count": 23,
+      "test_pass_rate": 0.2001,
+      "test_count": 115,
       "user_rating": null
     }
   },
@@ -31,9 +31,9 @@
       "stars": 0,
       "license": "",
       "last_updated": "",
-      "success_count": 21,
-      "test_pass_rate": 0.5833,
-      "test_count": 36,
+      "success_count": 24,
+      "test_pass_rate": 0.3749,
+      "test_count": 64,
       "user_rating": null
     }
   },
@@ -50,19 +50,22 @@
       "stars": 0,
       "license": "",
       "last_updated": "",
-      "success_count": 16,
-      "test_pass_rate": 0.4848,
-      "test_count": 33,
+      "success_count": 17,
+      "test_pass_rate": 0.3862,
+      "test_count": 44,
       "user_rating": null
     }
   },
   "browser_tool": {
-    "desc": "Dùng Playwright để điều khiển trình duyệt, scrape web.",
-    "use_when": "Cần truy cập website, lấy dữ liệu HTML, chụp ảnh web.",
+    "desc": "Điều khiển một phiên trang Playwright riêng cho từng AI; mỗi phiên có chuột ảo độc lập.",
+    "use_when": "Cần mở website, đọc nội dung, click phần tử hoặc tọa độ trang, nhập văn bản, chụp ảnh.",
     "actions": [
       "goto",
       "scrape",
-      "screenshot"
+      "screenshot",
+      "click",
+      "click_at",
+      "type_text"
     ],
     "meta": {
       "source": "builtin",
@@ -72,7 +75,7 @@
       "last_updated": "",
       "success_count": 0,
       "test_pass_rate": 0.0,
-      "test_count": 10,
+      "test_count": 25,
       "user_rating": null
     }
   },
@@ -88,9 +91,9 @@
       "stars": 0,
       "license": "",
       "last_updated": "",
-      "success_count": 5,
-      "test_pass_rate": 0.1562,
-      "test_count": 32,
+      "success_count": 12,
+      "test_pass_rate": 0.1876,
+      "test_count": 64,
       "user_rating": null
     }
   },
@@ -107,8 +110,8 @@
       "license": "",
       "last_updated": "",
       "success_count": 5,
-      "test_pass_rate": 0.3125,
-      "test_count": 16,
+      "test_pass_rate": 0.2273,
+      "test_count": 22,
       "user_rating": null
     }
   },
@@ -131,8 +134,8 @@
     }
   },
   "computer_tool": {
-    "desc": "Điều khiển chuột, bàn phím và chụp ảnh màn hình.",
-    "use_when": "Cần tương tác GUI, click, gõ phím, mở app desktop.",
+    "desc": "Điều khiển con trỏ chuột và bàn phím desktop dùng chung.",
+    "use_when": "Chỉ dùng ở chế độ đơn agent; trong swarm hãy dùng browser_tool để tránh tranh chấp con trỏ.",
     "actions": [
       "click",
       "type",
@@ -165,7 +168,7 @@
       "last_updated": "",
       "success_count": 0,
       "test_pass_rate": 0.0,
-      "test_count": 0,
+      "test_count": 3,
       "user_rating": null
     }
   },
@@ -183,9 +186,9 @@
       "stars": 103012,
       "license": "MIT",
       "last_updated": "2026-10-11T10:40:53+00:00",
-      "success_count": 2,
-      "test_pass_rate": 0.375,
-      "test_count": 8,
+      "success_count": 5,
+      "test_pass_rate": 0.1667,
+      "test_count": 36,
       "user_rating": null
     }
   }

@@ -22,9 +22,9 @@ TOOL_REGISTRY = {
         "actions": ["write_code", "fix_code"],
     },
     "browser_tool": {
-        "desc": "Dùng Playwright để điều khiển trình duyệt, scrape web.",
-        "use_when": "Cần truy cập website, lấy dữ liệu HTML, chụp ảnh web.",
-        "actions": ["goto", "scrape", "screenshot"],
+        "desc": "Điều khiển một phiên trang Playwright riêng cho từng AI; mỗi phiên có chuột ảo độc lập.",
+        "use_when": "Cần mở website, đọc nội dung, click phần tử hoặc tọa độ trang, nhập văn bản, chụp ảnh.",
+        "actions": ["goto", "scrape", "screenshot", "click", "click_at", "type_text"],
     },
     "search_tool": {
         "desc": "Tìm kiếm thông tin trên internet qua DuckDuckGo.",
@@ -42,9 +42,9 @@ TOOL_REGISTRY = {
         "actions": ["ffmpeg_run"],
     },
     "computer_tool": {
-        "desc": "Điều khiển chuột, bàn phím và chụp ảnh màn hình.",
-        "use_when": "Cần tương tác GUI, click, gõ phím, mở app desktop.",
-        "actions": ["click", "type", "screenshot"],
+        "desc": "Điều khiển desktop dùng chung không giới hạn số thao tác mỗi chuỗi; thao tác được khóa tuần tự, chụp ảnh trước/sau và hỗ trợ kiểm chứng OCR.",
+        "use_when": "Dùng cho ứng dụng trên máy tính; trong swarm chỉ dùng perform với verify_text ngắn, dễ quan sát. Không phát lại thao tác GUI đã chạy.",
+        "actions": ["perform", "click", "type_text", "press", "screenshot"],
     },
     "vision_tool": {
         "desc": "Phân tích hình ảnh, đọc chữ (OCR), mô tả ảnh bằng AI.",

@@ -7,9 +7,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from github import GithubException
-
-from core.skill_resolver import SkillResolver
+from core.skill_resolver import GithubException, SkillResolver
 
 
 class GitHubHunterBadInputTests(unittest.TestCase):
