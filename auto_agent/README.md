@@ -49,9 +49,16 @@ lập kế hoạch, tự thực thi, tự đánh giá, tự phản chiếu — h
 cd C:\javis\auto_agent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-playwright install chromium
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+Copy-Item env.sample .env
 ```
+
+Trên máy mới, clone repository rồi chạy các lệnh trên trong thư mục
+`auto_agent`. Mở `.env` cục bộ và tự điền API key của provider bạn chọn; file
+này bị loại khỏi Git. Không có API key thì có thể dùng Ollama local, nhưng chế
+độ 4 agent cần bốn model route miễn phí khác nhau đã cấu hình/cài đặt. Dùng
+`python main.py --agents 1 --goal "..."` để chạy thử một agent trước.
 
 If every configured provider is unavailable or rate-limited, the run reports
 the provider failures and exits with a non-zero status; an exhausted external
